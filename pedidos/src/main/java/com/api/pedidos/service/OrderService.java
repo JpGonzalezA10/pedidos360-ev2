@@ -10,6 +10,8 @@ import com.api.pedidos.dto.OrderStatusUpdateRequest;
 import com.api.pedidos.dto.PageResponse;
 import com.api.pedidos.dto.ProductInfoResponse;
 import com.api.pedidos.dto.StockAvailabilityResponse;
+import com.api.pedidos.event.OrderConfirmedEvent;
+import com.api.pedidos.event.OrderStatusChangedEvent;
 import com.api.pedidos.exception.BusinessRuleException;
 import com.api.pedidos.exception.ForbiddenException;
 import com.api.pedidos.exception.InsufficientStockException;
@@ -26,6 +28,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.domain.PageRequest;
@@ -47,17 +52,29 @@ public class OrderService {
             OrderStatus.CANCELLED, Set.of(),
             OrderStatus.PAYMENT_FAILED, Set.of(OrderStatus.CANCELLED));
 
+    // Estados de envio (microservicio envios) que impactan el estado del pedido.
+    private static final String SHIPMENT_IN_TRANSIT = "in_transit";
+    private static final String SHIPMENT_DELIVERED = "delivered";
+    private static final String SOURCE_API = "API";
+    private static final String SOURCE_SHIPPING = "ENVIOS";
+
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
     private final OrderRepository orderRepository;
     private final InventoryClient inventoryClient;
     private final AuthUserClient authUserClient;
+    // EP3: eventos de dominio; la capa messaging los publica en RabbitMQ tras el commit.
+    private final ApplicationEventPublisher eventPublisher;
 
     public OrderService(
             OrderRepository orderRepository,
             InventoryClient inventoryClient,
-            AuthUserClient authUserClient) {
+            AuthUserClient authUserClient,
+            ApplicationEventPublisher eventPublisher) {
         this.orderRepository = orderRepository;
         this.inventoryClient = inventoryClient;
         this.authUserClient = authUserClient;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional(readOnly = true)
@@ -128,7 +145,9 @@ public class OrderService {
                 reservedStocks.add(new ReservedStock(item.getProductId(), item.getQuantity()));
             }
             order.setStatus(OrderStatus.CONFIRMED);
-            return OrderResponse.from(orderRepository.save(order));
+            Order saved = orderRepository.save(order);
+            eventPublisher.publishEvent(OrderConfirmedEvent.from(saved));
+            return OrderResponse.from(saved);
         } catch (RuntimeException exception) {
             releaseReservedStocks(reservedStocks);
             throw exception;
@@ -175,10 +194,7 @@ public class OrderService {
             return OrderResponse.from(order);
         }
 
-        validateStatusTransition(order.getStatus(), newStatus);
-        applyInventorySideEffects(order, newStatus);
-        order.setStatus(newStatus);
-        return OrderResponse.from(orderRepository.save(order));
+        return OrderResponse.from(changeStatus(order, newStatus, SOURCE_API));
     }
 
     public OrderResponse cancel(UserContext userContext, UUID id) {
@@ -191,10 +207,48 @@ public class OrderService {
             return OrderResponse.from(order);
         }
 
-        validateStatusTransition(order.getStatus(), OrderStatus.CANCELLED);
-        applyInventorySideEffects(order, OrderStatus.CANCELLED);
-        order.setStatus(OrderStatus.CANCELLED);
-        return OrderResponse.from(orderRepository.save(order));
+        return OrderResponse.from(changeStatus(order, OrderStatus.CANCELLED, SOURCE_API));
+    }
+
+    /**
+     * EP3: sincroniza el pedido con el estado logistico informado por envios (via RabbitMQ).
+     * in_transit -> SHIPPED (confirma el stock reservado), delivered -> DELIVERED.
+     * Es idempotente: si el pedido ya esta en el estado destino no hace nada,
+     * por lo que un mensaje reentregado no genera efectos duplicados.
+     */
+    public void applyShipmentStatus(UUID orderId, String shipmentStatus) {
+        Order order = orderRepository.findByIdForUpdate(orderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Pedido no encontrado con id " + orderId));
+        String normalized = shipmentStatus == null ? "" : shipmentStatus.trim().toLowerCase(Locale.ROOT);
+
+        if (SHIPMENT_IN_TRANSIT.equals(normalized)) {
+            advanceTo(order, OrderStatus.SHIPPED);
+        } else if (SHIPMENT_DELIVERED.equals(normalized)) {
+            advanceTo(order, OrderStatus.SHIPPED);
+            advanceTo(order, OrderStatus.DELIVERED);
+        } else {
+            log.info("Estado de envio {} no modifica el pedido {}", normalized, orderId);
+        }
+    }
+
+    private void advanceTo(Order order, OrderStatus target) {
+        if (order.getStatus() == target
+                || (target == OrderStatus.SHIPPED && order.getStatus() == OrderStatus.DELIVERED)) {
+            return;
+        }
+        changeStatus(order, target, SOURCE_SHIPPING);
+    }
+
+    /** Aplica una transicion valida, sus efectos en inventario y emite el evento de dominio. */
+    private Order changeStatus(Order order, OrderStatus newStatus, String source) {
+        OrderStatus previousStatus = order.getStatus();
+        validateStatusTransition(previousStatus, newStatus);
+        applyInventorySideEffects(order, newStatus);
+        order.setStatus(newStatus);
+        Order saved = orderRepository.save(order);
+        eventPublisher.publishEvent(OrderStatusChangedEvent.of(
+                saved.getId(), saved.getCustomerId(), previousStatus, newStatus, source));
+        return saved;
     }
 
     private List<ResolvedOrderItem> resolveItems(OrderCreateRequest request) {

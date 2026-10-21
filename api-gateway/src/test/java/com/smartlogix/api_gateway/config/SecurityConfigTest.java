@@ -1,4 +1,4 @@
-﻿package com.smartlogix.api_gateway.config;
+package com.smartlogix.api_gateway.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

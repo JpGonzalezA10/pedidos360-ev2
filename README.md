@@ -378,3 +378,58 @@ https://github.com/FelipeNorambuena/Smartlogix.git
 
 El archivo `repositorios.txt` registra el repositorio principal y los enlaces por componente dentro del monorepo. Si el equipo decide separar frontend, BFF o microservicios en repositorios individuales, se deben reemplazar los valores pendientes por las URLs finales de GitHub.
 
+
+## EP3 - Mensajeria asincrona con RabbitMQ
+
+Se incorpora RabbitMQ para comunicar dominios de forma desacoplada, sin modificar los flujos REST existentes.
+Los servicios de negocio solo emiten eventos de dominio de Spring (`ApplicationEventPublisher`); la capa
+`messaging/` de cada microservicio los publica en RabbitMQ **despues del commit** (`@TransactionalEventListener`).
+
+### Estructura de la capa de mensajeria (por microservicio)
+
+```text
+messaging/
+  config/     MessagingProperties (nombres centralizados), RabbitTopologyConfig (Queue/Exchange/Binding), RabbitMessagingConfig (JSON + confirms)
+  producer/   publicadores de eventos propios
+  consumer/   @RabbitListener agrupados por dominio (consumer/pedidos, consumer/envios, consumer/alertas, consumer/notificaciones)
+  event/      contratos de los mensajes consumidos
+  support/    MessageAcknowledger (ACK/NACK, retry y DLQ)
+```
+
+### Topologia
+
+| Exchange (topic) | Routing key | Cola consumidora | Microservicio | Accion |
+| --- | --- | --- | --- | --- |
+| `pedidos.events` | `pedido.confirmado` | `envios.pedido-confirmado.queue` | envios | Crea el despacho automaticamente |
+| `pedidos.events` | `pedido.confirmado` | `inventario.pedido-confirmado.queue` | inventario | Evalua stock bajo de los productos |
+| `pedidos.events` | `pedido.cancelado` | `envios.pedido-cancelado.queue` | envios | Cancela el despacho pendiente |
+| `pedidos.events` | `pedido.estado.actualizado` | `pedidos.notificaciones-cliente.queue` | pedidos | Notifica al cliente el cambio de estado |
+| `envios.events` | `envio.estado.actualizado` | `pedidos.envio-estado.queue` | pedidos | Sincroniza SHIPPED / DELIVERED |
+| `inventario.events` | `inventario.stock.bajo` | `inventario.alertas-stock.queue` | inventario | Notifica reposicion al operador |
+
+Cada cola tiene su `*.retry` (TTL 5 s, vuelve a la cola principal) y su `*.dlq` enlazada al DLX del servicio
+(`pedidos.dlx`, `envios.dlx`, `inventario.dlx`, tipo direct). Las DLQ retienen 7 dias y maximo 10.000 mensajes.
+
+### Confirmacion y manejo de errores (ACK manual)
+
+| Situacion | Decision | Resultado |
+| --- | --- | --- |
+| Procesado correctamente | `basicAck` | Mensaje eliminado de la cola |
+| Error permanente (payload invalido, recurso inexistente, regla de negocio) | `basicNack(requeue=false)` | DLX -> DLQ + log `[DLQ]` |
+| Error transitorio (servicio caido, BD) | copia a `*.retry` con `x-retry-count+1` y `basicAck` | Reintento a los 5 s (max. 3 intentos) |
+| Reintentos agotados | `basicNack(requeue=false)` | DLX -> DLQ + log `[DLQ]` |
+
+Nunca se usa `requeue=true` sobre la cola principal (evita *poison messages* en bucle). Los consumidores son idempotentes.
+
+### Ejecucion del stack completo
+
+```bash
+cp .env.example .env
+docker compose --profile app up -d --build
+docker exec -i pedidos360-mysql mysql < smartlogix_inventory_seed_products.sql   # datos de inventario
+bash scripts/ep3-demo.sh            # escenarios de demostracion (requiere curl y jq)
+```
+
+- RabbitMQ Management: `http://<host>:15672` (usuario/clave de `.env`)
+- Administrador de RabbitMQ: ver [`rabbitmq-admin/README.md`](rabbitmq-admin/README.md)
+- Frontend: seccion **Mensajeria** del panel ADMIN (alerta de DLQ con consulta cada 5 s)

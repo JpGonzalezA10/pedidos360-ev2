@@ -1,4 +1,4 @@
-﻿package com.api.pedidos.client;
+package com.api.pedidos.client;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

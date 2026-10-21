@@ -3,6 +3,7 @@ import UsersAdminSection from '../../authAdmin/components/UsersAdminSection'
 import SessionCard from '../../auth/components/SessionCard'
 import InventorySection from '../../inventory/components/InventorySection'
 import OrdersSection from '../../orders/components/OrdersSection'
+import RabbitAdminSection from '../../rabbitAdmin/components/RabbitAdminSection'
 import ShippingSection from '../../shipping/components/ShippingSection'
 import { ADMIN_SECTIONS } from '../constants/adminSections'
 import '../styles/admin-dashboard.css'
@@ -82,6 +83,10 @@ function renderAdminSection(activeSection, session) {
 
   if (activeSection === 'shipping') {
     return <ShippingSection session={session} />
+  }
+
+  if (activeSection === 'messaging') {
+    return <RabbitAdminSection session={session} />
   }
 
   return <AdminHome session={session} />

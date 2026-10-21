@@ -1,0 +1,6 @@
+# Raiz del monorepo: cada microservicio y el frontend tienen su propio .gitignore.
+# Variables locales de docker compose (credenciales y API keys).
+.env
+# Salidas de los scripts de demostracion.
+*.log
+.idea/

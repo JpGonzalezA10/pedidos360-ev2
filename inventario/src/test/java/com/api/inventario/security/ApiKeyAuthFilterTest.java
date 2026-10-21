@@ -1,4 +1,4 @@
-﻿package com.api.inventario.security;
+package com.api.inventario.security;
 
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;

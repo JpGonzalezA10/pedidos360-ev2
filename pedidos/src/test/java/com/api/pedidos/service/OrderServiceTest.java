@@ -1,4 +1,4 @@
-﻿package com.api.pedidos.service;
+package com.api.pedidos.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -17,6 +17,7 @@ import com.api.pedidos.dto.OrderItemRequest;
 import com.api.pedidos.dto.OrderResponse;
 import com.api.pedidos.dto.ProductInfoResponse;
 import com.api.pedidos.dto.StockAvailabilityResponse;
+import com.api.pedidos.event.OrderStatusChangedEvent;
 import com.api.pedidos.exception.BusinessRuleException;
 import com.api.pedidos.model.Order;
 import com.api.pedidos.model.OrderItem;
@@ -31,6 +32,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.mockito.ArgumentCaptor;
@@ -53,6 +55,10 @@ class OrderServiceTest {
 
     @Mock
     private AuthUserClient authUserClient;
+
+    // EP3: OrderService emite eventos de dominio que la capa messaging publica en RabbitMQ.
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks
     private OrderService orderService;
@@ -222,6 +228,38 @@ class OrderServiceTest {
                 .hasMessageContaining("Solo ADMIN u OPERADOR_PEDIDOS");
 
         verify(orderRepository, never()).findByIdForUpdate(any());
+    }
+
+    // EP3: un envio entregado lleva el pedido CONFIRMED a SHIPPED y luego a DELIVERED, emitiendo eventos.
+    @Test
+    void deliveredShipmentMovesConfirmedOrderToDeliveredAndPublishesEvents() {
+        UUID orderId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        Order order = confirmedOrder(UUID.randomUUID(), productId);
+
+        when(orderRepository.findByIdForUpdate(orderId)).thenReturn(Optional.of(order));
+        when(orderRepository.save(any(Order.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        orderService.applyShipmentStatus(orderId, "delivered");
+
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.DELIVERED);
+        verify(inventoryClient).confirmReservedStock(productId, 3);
+        verify(eventPublisher, org.mockito.Mockito.times(2)).publishEvent(any(OrderStatusChangedEvent.class));
+    }
+
+    // EP3: mensaje reentregado (pedido ya en el estado destino) no produce efectos duplicados.
+    @Test
+    void repeatedShipmentStatusIsIdempotent() {
+        UUID orderId = UUID.randomUUID();
+        Order order = confirmedOrder(UUID.randomUUID(), UUID.randomUUID());
+        order.setStatus(OrderStatus.SHIPPED);
+
+        when(orderRepository.findByIdForUpdate(orderId)).thenReturn(Optional.of(order));
+
+        orderService.applyShipmentStatus(orderId, "in_transit");
+
+        verify(orderRepository, never()).save(any());
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
     }
 
     private UserContext client(UUID customerId) {

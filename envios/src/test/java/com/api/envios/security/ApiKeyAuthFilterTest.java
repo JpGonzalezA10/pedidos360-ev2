@@ -1,4 +1,4 @@
-﻿package com.api.envios.security;
+package com.api.envios.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;

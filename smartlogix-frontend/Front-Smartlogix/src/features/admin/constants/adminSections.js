@@ -8,4 +8,6 @@ export const ADMIN_SECTIONS = [
   { id: 'inventory', label: 'Inventario' },
   { id: 'orders', label: 'Pedidos' },
   { id: 'shipping', label: 'Env\u00edos' },
+  // EP3: administracion de RabbitMQ y alertas de DLQ.
+  { id: 'messaging', label: 'Mensajer\u00eda' },
 ]

@@ -8,6 +8,7 @@ import com.api.envios.dto.ShipmentEventResponse;
 import com.api.envios.dto.ShipmentResponse;
 import com.api.envios.dto.ShipmentStatusUpdateRequest;
 import com.api.envios.dto.ShipmentUpdateRequest;
+import com.api.envios.event.ShipmentStatusChangedEvent;
 import com.api.envios.exception.BusinessRuleException;
 import com.api.envios.exception.ResourceNotFoundException;
 import com.api.envios.model.Shipment;
@@ -19,7 +20,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -62,17 +67,26 @@ public class ShipmentService {
             STATUS_DELIVERED, Set.of(),
             STATUS_CANCELLED, Set.of());
 
+    // Estados desde los que un envio aun puede cancelarse cuando se cancela el pedido.
+    private static final Set<String> CANCELLABLE_STATUSES = Set.of(STATUS_PENDING, STATUS_READY_TO_SHIP);
+
+    private static final Logger log = LoggerFactory.getLogger(ShipmentService.class);
+
     private final ShipmentRepository shipmentRepository;
     private final ShipmentEventRepository shipmentEventRepository;
     private final OrdersClient ordersClient;
+    // EP3: eventos de dominio; la capa messaging los publica en RabbitMQ tras el commit.
+    private final ApplicationEventPublisher eventPublisher;
 
     public ShipmentService(
             ShipmentRepository shipmentRepository,
             ShipmentEventRepository shipmentEventRepository,
-            OrdersClient ordersClient) {
+            OrdersClient ordersClient,
+            ApplicationEventPublisher eventPublisher) {
         this.shipmentRepository = shipmentRepository;
         this.shipmentEventRepository = shipmentEventRepository;
         this.ordersClient = ordersClient;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional(readOnly = true)
@@ -155,7 +169,52 @@ public class ShipmentService {
 
         Shipment saved = shipmentRepository.save(shipment);
         registerEvent(saved, initialStatus, null, "Envio creado", initialEventDate);
+        publishStatusChanged(saved, null);
         return ShipmentResponse.from(saved);
+    }
+
+    /**
+     * EP3: crea el despacho a partir del evento pedido.confirmado (RabbitMQ).
+     * El evento ya trae la direccion, por lo que no se consulta a pedidos por HTTP.
+     * Idempotente: si el pedido ya tiene envio, se devuelve vacio y no se duplica.
+     */
+    public Optional<ShipmentResponse> createFromConfirmedOrder(UUID orderId, String shippingAddress) {
+        if (orderId == null || trimToNull(shippingAddress) == null) {
+            throw new BusinessRuleException("El evento de pedido no trae orderId o direccion de envio");
+        }
+        if (shipmentRepository.existsByOrderId(orderId)) {
+            log.info("El pedido {} ya tiene envio; se ignora el evento duplicado", orderId);
+            return Optional.empty();
+        }
+
+        Shipment shipment = new Shipment();
+        shipment.setOrderId(orderId);
+        shipment.setStatus(STATUS_PENDING);
+        shipment.setShippingAddress(shippingAddress.trim());
+        Shipment saved = shipmentRepository.save(shipment);
+        registerEvent(saved, STATUS_PENDING, null, "Envio creado automaticamente desde pedido confirmado",
+                OffsetDateTime.now());
+        publishStatusChanged(saved, null);
+        return Optional.of(ShipmentResponse.from(saved));
+    }
+
+    /**
+     * EP3: cancela el despacho cuando llega el evento pedido.cancelado (RabbitMQ).
+     * Solo cancela envios que aun no salieron; si ya esta en transito o no existe, solo registra.
+     */
+    public Optional<ShipmentResponse> cancelForCancelledOrder(UUID orderId) {
+        Optional<Shipment> existing = shipmentRepository.findByOrderId(orderId);
+        if (existing.isEmpty()) {
+            log.info("Pedido {} cancelado sin envio asociado; nada que cancelar", orderId);
+            return Optional.empty();
+        }
+        Shipment shipment = existing.get();
+        if (!CANCELLABLE_STATUSES.contains(shipment.getStatus())) {
+            log.warn("Pedido {} cancelado pero el envio {} esta en estado {}; requiere gestion manual",
+                    orderId, shipment.getId(), shipment.getStatus());
+            return Optional.empty();
+        }
+        return Optional.of(cancel(shipment.getId()));
     }
 
     public ShipmentResponse update(UUID id, ShipmentUpdateRequest request) {
@@ -176,7 +235,8 @@ public class ShipmentService {
         Shipment shipment = shipmentRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Envio no encontrado con id " + id));
         String newStatus = normalizeStatus(request.status());
-        validateStatusTransition(shipment.getStatus(), newStatus);
+        String previousStatus = shipment.getStatus();
+        validateStatusTransition(previousStatus, newStatus);
 
         shipment.setStatus(newStatus);
         applyAutomaticDates(shipment, newStatus, request.occurredAt());
@@ -187,6 +247,9 @@ public class ShipmentService {
                 trimToNull(request.location()),
                 trimToNull(request.description()),
                 request.occurredAt());
+        if (!previousStatus.equals(newStatus)) {
+            publishStatusChanged(saved, previousStatus);
+        }
         return ShipmentResponse.from(saved);
     }
 
@@ -198,6 +261,12 @@ public class ShipmentService {
                 "Envio cancelado",
                 OffsetDateTime.now());
         return updateStatus(id, request);
+    }
+
+    /** Emite el evento de dominio; previousStatus null significa envio recien creado. */
+    private void publishStatusChanged(Shipment shipment, String previousStatus) {
+        eventPublisher.publishEvent(ShipmentStatusChangedEvent.of(
+                shipment.getId(), shipment.getOrderId(), previousStatus, shipment.getStatus()));
     }
 
     private Shipment findEntityById(UUID id) {

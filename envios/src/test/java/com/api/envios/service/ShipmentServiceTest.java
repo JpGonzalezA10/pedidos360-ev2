@@ -1,4 +1,4 @@
-﻿package com.api.envios.service;
+package com.api.envios.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,6 +43,10 @@ class ShipmentServiceTest {
 
     @Mock
     private OrdersClient ordersClient;
+
+    // EP3: ShipmentService emite eventos de dominio que la capa messaging publica en RabbitMQ.
+    @Mock
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     @InjectMocks
     private ShipmentService shipmentService;

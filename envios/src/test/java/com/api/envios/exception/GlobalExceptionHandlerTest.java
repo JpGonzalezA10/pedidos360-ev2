@@ -1,4 +1,4 @@
-﻿package com.api.envios.exception;
+package com.api.envios.exception;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

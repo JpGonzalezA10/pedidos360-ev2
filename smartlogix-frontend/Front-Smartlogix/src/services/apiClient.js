@@ -26,7 +26,11 @@ export async function apiRequest(path, { body, headers, method = 'GET', token } 
   const payload = await readResponsePayload(response)
 
   if (!response.ok) {
-    throw new Error(resolveErrorMessage(response.status, payload))
+    const error = new Error(resolveErrorMessage(response.status, payload))
+    // Se conserva el status y el detalle por campo (validaciones 400) para mostrarlos en la UI.
+    error.status = response.status
+    error.details = payload?.details || {}
+    throw error
   }
 
   return payload

@@ -1,4 +1,4 @@
-﻿package com.smartlogix.api_gateway.config;
+package com.smartlogix.api_gateway.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,5 +33,13 @@ class GatewayRoutesConfigTest {
         ShippingRoutesConfig config = new ShippingRoutesConfig();
 
         assertThat(config.shippingRoute("http://localhost:8083", "shipping-key")).isNotNull();
+    }
+
+    // EP3: valida rabbit admin route can be built.
+    @Test
+    void rabbitAdminRouteCanBeBuilt() {
+        RabbitAdminRoutesConfig config = new RabbitAdminRoutesConfig();
+
+        assertThat(config.rabbitAdminRoute("http://localhost:8085", "rabbit-admin-key")).isNotNull();
     }
 }

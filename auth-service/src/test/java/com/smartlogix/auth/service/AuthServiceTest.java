@@ -1,4 +1,4 @@
-﻿package com.smartlogix.auth.service;
+package com.smartlogix.auth.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

@@ -46,6 +46,16 @@
       "description": "Internal API key forwarded by api-gateway to envios as X-API-Key."
     },
     {
+      "name": "gateway.routes.rabbit-admin-service-url",
+      "type": "java.lang.String",
+      "description": "Base URL used by api-gateway to route requests to rabbitmq-admin (EP3)."
+    },
+    {
+      "name": "gateway.routes.rabbit-admin-api-key",
+      "type": "java.lang.String",
+      "description": "Internal API key forwarded by api-gateway to rabbitmq-admin as X-API-Key."
+    },
+    {
       "name": "gateway.cors.allowed-origins",
       "type": "java.lang.String",
       "description": "Comma-separated list of frontend origins allowed by api-gateway CORS configuration."

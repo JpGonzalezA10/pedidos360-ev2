@@ -1,4 +1,4 @@
-﻿package com.api.inventario;
+package com.api.inventario;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

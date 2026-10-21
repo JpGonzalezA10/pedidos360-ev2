@@ -1,4 +1,4 @@
-﻿package com.api.pedidos.config;
+package com.api.pedidos.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

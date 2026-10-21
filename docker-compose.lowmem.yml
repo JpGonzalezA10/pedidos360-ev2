@@ -1,0 +1,48 @@
+# EP3 - Override para instancias de capa gratuita (t3.micro, 1 GB RAM + swap).
+# Usa jars precompilados y limita la memoria de cada JVM, MySQL y RabbitMQ.
+#   for s in inventario pedidos envios rabbitmq-admin auth-service api-gateway; do (cd $s && ./mvnw -q -DskipTests package); done
+#   docker compose -f docker-compose.yml -f docker-compose.lowmem.yml --profile app up -d --build
+x-lowmem-java: &lowmem-java
+  JAVA_TOOL_OPTIONS: >-
+    -Xms64m -Xmx160m -XX:MaxMetaspaceSize=140m -XX:ReservedCodeCacheSize=32m
+    -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:CICompilerCount=1
+
+services:
+  mysql:
+    command:
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=32M
+      - --innodb-log-buffer-size=4M
+      - --key-buffer-size=8M
+      - --max-connections=60
+    mem_limit: 300m
+
+  rabbitmq:
+    environment:
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "+MBas ageffcbf +MHas ageffcbf +MBlmbcs 512 +MHlmbcs 512 +MMmcs 30"
+    mem_limit: 250m
+
+  auth-service:
+    build: &prebuilt
+      dockerfile: ../docker/spring-service-prebuilt.Dockerfile
+    environment: *lowmem-java
+
+  inventario:
+    build: *prebuilt
+    environment: *lowmem-java
+
+  pedidos:
+    build: *prebuilt
+    environment: *lowmem-java
+
+  envios:
+    build: *prebuilt
+    environment: *lowmem-java
+
+  rabbitmq-admin:
+    build: *prebuilt
+    environment: *lowmem-java
+
+  api-gateway:
+    build: *prebuilt
+    environment: *lowmem-java

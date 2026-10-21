@@ -1,64 +1,51 @@
-﻿package com.smartlogix.api_gateway.config;
+package com.smartlogix.api_gateway.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.nimbusds.jose.jwk.source.ImmutableSecret;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
+import java.util.List;
 import org.junit.jupiter.api.Test;
-import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.security.oauth2.jwt.JwtClaimsSet;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.JwtEncoder;
-import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
-import org.springframework.security.oauth2.jwt.JwsHeader;
-import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
 /*
- * Pruebas unitarias de la configuracion JWT del Gateway.
- * Verifican que la misma clave compartida valide tokens emitidos por auth-service.
+ * Pruebas unitarias de la validacion JWT del Gateway (BFF) contra Azure AD.
+ * La firma e issuer los valida NimbusJwtDecoder con el JWKS del tenant (requiere red);
+ * aqui se prueba sin red la regla propia: la audience debe ser la app Pedidos360-SPA.
+ *
+ * EP3: reemplaza la prueba anterior basada en la clave HMAC de auth-service,
+ * que dejo de compilar al migrar el gateway a Azure AD.
  */
 class JwtConfigTest {
 
-    private final JwtConfig jwtConfig = new JwtConfig();
+    private static final String EXPECTED_AUDIENCE = "51f7e0fc-5612-4909-b8f4-4f810f5176c4";
 
-    // Guia: valida jwt secret key rejects short secrets.
+    private final AudienceValidator validator = new AudienceValidator(EXPECTED_AUDIENCE);
+
     @Test
-    void jwtSecretKeyRejectsShortSecrets() {
-        assertThatThrownBy(() -> jwtConfig.jwtSecretKey("short-secret"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("al menos 32 bytes");
+    void acceptsTokenIssuedForPedidos360Audience() {
+        OAuth2TokenValidatorResult result = validator.validate(jwtWithAudience(EXPECTED_AUDIENCE));
+
+        assertThat(result.hasErrors()).isFalse();
     }
 
-    // Guia: valida jwt decoder accepts token with configured issuer.
     @Test
-    void jwtDecoderAcceptsTokenWithConfiguredIssuer() {
-        String secret = "smartlogix-auth-test-secret-12345678901234567890";
-        SecretKey key = jwtConfig.jwtSecretKey(secret);
-        JwtEncoder encoder = new NimbusJwtEncoder(new ImmutableSecret<>(key));
-        JwtDecoder decoder = jwtConfig.jwtDecoder(key, "smartlogix-auth-test");
-        Instant now = Instant.now();
+    void rejectsTokenIssuedForAnotherApplication() {
+        OAuth2TokenValidatorResult result = validator.validate(jwtWithAudience("otra-aplicacion"));
 
-        JwtClaimsSet claims = JwtClaimsSet.builder()
-                .issuer("smartlogix-auth-test")
-                .subject("admin@smartlogix.com")
+        assertThat(result.hasErrors()).isTrue();
+        assertThat(result.getErrors()).anyMatch(error -> "invalid_token".equals(error.getErrorCode()));
+    }
+
+    private Jwt jwtWithAudience(String audience) {
+        Instant now = Instant.now();
+        return Jwt.withTokenValue("token")
+                .header("alg", "RS256")
+                .issuer("https://login.microsoftonline.com/tenant/v2.0")
+                .audience(List.of(audience))
+                .claim("roles", List.of("ADMIN"))
                 .issuedAt(now)
                 .expiresAt(now.plusSeconds(1800))
-                .claim("roles", java.util.List.of("ADMIN"))
                 .build();
-
-        String token = encoder.encode(JwtEncoderParameters.from(
-                        JwsHeader.with(MacAlgorithm.HS256).build(),
-                        claims))
-                .getTokenValue();
-        Jwt decoded = decoder.decode(token);
-
-        assertThat(decoded.getClaimAsString("iss")).isEqualTo("smartlogix-auth-test");
-        assertThat(decoded.getSubject()).isEqualTo("admin@smartlogix.com");
-        assertThat(decoded.getClaimAsStringList("roles")).containsExactly("ADMIN");
     }
 }
