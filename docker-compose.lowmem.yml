@@ -18,8 +18,12 @@ services:
     mem_limit: 300m
 
   rabbitmq:
-    environment:
+    environment: &lowmem-rabbitmq
       RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "+MBas ageffcbf +MHas ageffcbf +MBlmbcs 512 +MHlmbcs 512 +MMmcs 30"
+    mem_limit: 250m
+
+  rabbitmq-2:
+    environment: *lowmem-rabbitmq
     mem_limit: 250m
 
   auth-service:
