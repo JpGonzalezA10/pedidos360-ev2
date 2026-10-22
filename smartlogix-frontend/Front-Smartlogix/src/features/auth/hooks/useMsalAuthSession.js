@@ -1,5 +1,5 @@
 import { useMsal, useIsAuthenticated } from '@azure/msal-react'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { loginRequest } from '../../../auth/msalConfig'
 
 /*
@@ -17,12 +17,39 @@ export function useMsalAuthSession() {
   // como App Roles (ADMIN, OPERADOR_PEDIDOS, ...). Ver Fase 1 del informe.
   const roles = account?.idTokenClaims?.roles || []
 
+  // Access token del scope access_as_user: es el que valida el API Gateway.
+  // Las secciones lo leen como session.token, igual que con el login propio.
+  const [accessToken, setAccessToken] = useState(null)
+
+  useEffect(() => {
+    if (!account) {
+      return undefined
+    }
+
+    let cancelled = false
+    instance
+      .acquireTokenSilent({ ...loginRequest, account })
+      .then((result) => {
+        if (!cancelled) {
+          setAccessToken(result.accessToken)
+        }
+      })
+      .catch((error) => {
+        console.error('No se pudo obtener el access token de Azure AD', error)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [account, instance])
+
   const session = useMemo(() => {
     if (!isAuthenticated || !account) {
       return null
     }
 
     return {
+      token: accessToken,
       tokenType: 'Bearer',
       expiresAt: account.idTokenClaims?.exp
         ? account.idTokenClaims.exp * 1000
@@ -34,7 +61,7 @@ export function useMsalAuthSession() {
         roles,
       },
     }
-  }, [account, isAuthenticated, roles])
+  }, [accessToken, account, isAuthenticated, roles])
 
   const userDisplayName = useMemo(() => {
     if (!session?.user) {
