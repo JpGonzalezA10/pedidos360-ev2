@@ -2,6 +2,8 @@
 # =====================================================================
 # EP5 - Despliegue de Pedidos360 + Kafka en la EC2. Se ejecuta en la instancia:
 #   nohup bash ec2-deploy-ep5.sh > ~/deploy.log 2>&1 &
+# Codigo fuente: ~/pedidos360-ep5.tar.gz (si existe) o un git clone en ~/pedidos360
+#   git clone -b feature/ep5-kafka https://github.com/JpGonzalezA10/pedidos360-ev2.git ~/pedidos360
 # 1. Infraestructura: MySQL, cluster RabbitMQ, ZooKeeper + 3 brokers Kafka, kafka-init y Kafka-UI.
 # 2. Compila los 7 microservicios con Maven (uno a la vez) y los levanta con imagenes prebuilt.
 # 3. Carga los productos semilla de inventario.
@@ -11,7 +13,7 @@ set -euo pipefail
 until [ -f /var/tmp/bootstrap-done ]; do echo "esperando bootstrap de la instancia..."; sleep 10; done
 
 mkdir -p ~/pedidos360
-tar -xzf ~/pedidos360-ep5.tar.gz -C ~/pedidos360
+[ -f ~/pedidos360-ep5.tar.gz ] && tar -xzf ~/pedidos360-ep5.tar.gz -C ~/pedidos360
 cd ~/pedidos360
 [ -f .env ] || cp .env.example .env
 # Listener EXTERNAL de los brokers con la IP publica (IMDSv2).
