@@ -60,7 +60,8 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-      ZOOKEEPER_4LW_COMMANDS_WHITELIST: ruok,stat,srvr,mntr
+      # Habilita los comandos de 4 letras usados por el healthcheck (ruok) y el monitoreo.
+      KAFKA_OPTS: -Dzookeeper.4lw.commands.whitelist=ruok,stat,srvr,mntr
       KAFKA_HEAP_OPTS: -Xms128m -Xmx256m
     ports:
       - "2181:2181"
