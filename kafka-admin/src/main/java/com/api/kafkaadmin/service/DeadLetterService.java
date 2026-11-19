@@ -138,15 +138,19 @@ public class DeadLetterService {
         int republished = 0;
         try (KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(consumerProps(groupId));
                 KafkaProducer<byte[], byte[]> producer = new KafkaProducer<>(producerProps())) {
-            consumer.assign(partitions(deadLetterTopic));
+            List<TopicPartition> dltPartitions = partitions(deadLetterTopic);
+            consumer.assign(dltPartitions);
+            // Solo se reprocesa lo que habia en la DLT al iniciar: si un mensaje vuelve a fallar y regresa
+            // a la DLT durante esta llamada, NO se re-inyecta otra vez (evita un bucle de mensajes venenosos).
+            Map<TopicPartition, Long> endAtStart = kafkaAdminService.offsets(dltPartitions, OffsetSpec.latest());
             boolean keepReading = true;
             while (keepReading && republished < limit) {
                 ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(properties.reprocess().pollTimeoutMs()));
-                keepReading = !records.isEmpty();
                 Map<TopicPartition, OffsetAndMetadata> toCommit = new HashMap<>();
                 for (ConsumerRecord<byte[], byte[]> record : records) {
-                    if (republished >= limit) {
-                        break;
+                    TopicPartition tp = new TopicPartition(record.topic(), record.partition());
+                    if (republished >= limit || record.offset() >= endAtStart.getOrDefault(tp, 0L)) {
+                        continue;
                     }
                     ProducerRecord<byte[], byte[]> copy = new ProducerRecord<>(target, record.key(), record.value());
                     for (Header header : record.headers()) {
@@ -164,6 +168,9 @@ public class DeadLetterService {
                 if (!toCommit.isEmpty()) {
                     consumer.commitSync(toCommit);
                 }
+                // Continua mientras alguna particion no haya llegado al fin que tenia al iniciar.
+                keepReading = !records.isEmpty()
+                        && dltPartitions.stream().anyMatch(tp -> consumer.position(tp) < endAtStart.getOrDefault(tp, 0L));
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
