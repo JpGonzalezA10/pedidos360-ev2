@@ -5,6 +5,7 @@ import com.api.inventario.dto.InventoryUpdateRequest;
 import com.api.inventario.dto.PageResponse;
 import com.api.inventario.dto.StockAvailabilityResponse;
 import com.api.inventario.dto.StockResponse;
+import com.api.inventario.event.StockChangedEvent;
 import com.api.inventario.exception.BusinessRuleException;
 import com.api.inventario.exception.ResourceNotFoundException;
 import com.api.inventario.model.Inventory;
@@ -12,6 +13,7 @@ import com.api.inventario.model.Product;
 import com.api.inventario.repository.InventoryRepository;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -28,10 +30,16 @@ public class InventoryService {
      */
     private final InventoryRepository inventoryRepository;
     private final ProductService productService;
+    // EP5: eventos de dominio de stock; la capa streaming los publica en Kafka tras el commit.
+    private final ApplicationEventPublisher eventPublisher;
 
-    public InventoryService(InventoryRepository inventoryRepository, ProductService productService) {
+    public InventoryService(
+            InventoryRepository inventoryRepository,
+            ProductService productService,
+            ApplicationEventPublisher eventPublisher) {
         this.inventoryRepository = inventoryRepository;
         this.productService = productService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional(readOnly = true)
@@ -101,7 +109,9 @@ public class InventoryService {
         inventory.setWarehouseLocation(trimToNull(request.warehouseLocation()));
         inventory.setReorderPoint(request.reorderPoint());
 
-        return InventoryResponse.from(inventoryRepository.save(inventory));
+        Inventory saved = inventoryRepository.save(inventory);
+        publishStockChanged(saved, StockChangedEvent.Reason.ADJUSTED);
+        return InventoryResponse.from(saved);
     }
 
     public StockResponse reserveStock(UUID productId, Integer quantity) {
@@ -117,7 +127,7 @@ public class InventoryService {
         }
 
         inventory.setStockReserved(inventory.getStockReserved() + requestedQuantity);
-        return StockResponse.from(inventoryRepository.save(inventory));
+        return saveAndPublish(inventory, StockChangedEvent.Reason.RESERVED);
     }
 
     public StockResponse releaseReservedStock(UUID productId, Integer quantity) {
@@ -131,7 +141,7 @@ public class InventoryService {
         }
 
         inventory.setStockReserved(inventory.getStockReserved() - requestedQuantity);
-        return StockResponse.from(inventoryRepository.save(inventory));
+        return saveAndPublish(inventory, StockChangedEvent.Reason.RELEASED);
     }
 
     public StockResponse confirmReservedStock(UUID productId, Integer quantity) {
@@ -146,7 +156,30 @@ public class InventoryService {
 
         inventory.setStockReserved(inventory.getStockReserved() - requestedQuantity);
         inventory.setStockAvailable(inventory.getStockAvailable() - requestedQuantity);
-        return StockResponse.from(inventoryRepository.save(inventory));
+        return saveAndPublish(inventory, StockChangedEvent.Reason.SOLD);
+    }
+
+    /**
+     * EP5: publica la foto actual del stock de todos los productos (motivo SNAPSHOT).
+     * Sirve para poblar el topico compactado despues de una carga masiva por SQL (productos semilla)
+     * o para que un consumidor nuevo reconstruya su proyeccion. Devuelve la cantidad publicada.
+     */
+    @Transactional(readOnly = true)
+    public int republishStockSnapshots() {
+        List<Inventory> inventories = inventoryRepository.findAll();
+        inventories.forEach(inventory -> publishStockChanged(inventory, StockChangedEvent.Reason.SNAPSHOT));
+        return inventories.size();
+    }
+
+    private StockResponse saveAndPublish(Inventory inventory, StockChangedEvent.Reason reason) {
+        Inventory saved = inventoryRepository.save(inventory);
+        publishStockChanged(saved, reason);
+        return StockResponse.from(saved);
+    }
+
+    private void publishStockChanged(Inventory inventory, StockChangedEvent.Reason reason) {
+        // EP5: se publica en Kafka solo si la transaccion confirma (TransactionalEventListener).
+        eventPublisher.publishEvent(StockChangedEvent.of(inventory, reason));
     }
 
     private Inventory findEntityByProductId(UUID productId) {

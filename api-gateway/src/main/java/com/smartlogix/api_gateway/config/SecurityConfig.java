@@ -50,6 +50,8 @@ public class SecurityConfig {
                         .requestMatchers("/shipping", "/shipping/**").hasAnyRole("ADMIN", "OPERADOR_ENVIOS")
                         // EP3: administracion de RabbitMQ (colas, exchanges, bindings y DLQ) solo para ADMIN.
                         .requestMatchers("/rabbit-admin", "/rabbit-admin/**").hasRole("ADMIN")
+                        // EP5: administracion de Kafka (topicos, configuraciones, consumer groups y DLT) solo para ADMIN.
+                        .requestMatchers("/kafka-admin", "/kafka-admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));

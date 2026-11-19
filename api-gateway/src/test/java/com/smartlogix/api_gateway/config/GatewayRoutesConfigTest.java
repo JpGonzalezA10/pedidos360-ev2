@@ -42,4 +42,12 @@ class GatewayRoutesConfigTest {
 
         assertThat(config.rabbitAdminRoute("http://localhost:8085", "rabbit-admin-key")).isNotNull();
     }
+
+    // EP5: valida que la ruta del administrador de Kafka se construye.
+    @Test
+    void kafkaAdminRouteCanBeBuilt() {
+        KafkaAdminRoutesConfig config = new KafkaAdminRoutesConfig();
+
+        assertThat(config.kafkaAdminRoute("http://localhost:8086", "kafka-admin-key")).isNotNull();
+    }
 }

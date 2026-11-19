@@ -42,6 +42,11 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
+		<!-- EP5: streaming de eventos con Apache Kafka (Spring for Apache Kafka) -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-kafka</artifactId>
+		</dependency>
 		<!-- EP3: mensajeria asincrona con RabbitMQ (Spring AMQP) -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -91,6 +96,12 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-validation-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- EP5: broker Kafka embebido (en la JVM, sin Docker) para pruebas de integracion -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-kafka-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>

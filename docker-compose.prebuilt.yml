@@ -1,0 +1,22 @@
+# EP5 - Override para la EC2: las imagenes usan el jar ya compilado en target/ (./mvnw -DskipTests package)
+# en vez de compilar con Maven dentro de Docker (evita 7 compilaciones en paralelo en la instancia).
+#   for s in auth-service inventario pedidos envios rabbitmq-admin kafka-admin api-gateway; do (cd $s && ./mvnw -q -DskipTests package); done
+#   docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml --profile app up -d --build
+x-prebuilt: &prebuilt
+  dockerfile: ../docker/spring-service-prebuilt.Dockerfile
+
+services:
+  auth-service:
+    build: *prebuilt
+  inventario:
+    build: *prebuilt
+  pedidos:
+    build: *prebuilt
+  envios:
+    build: *prebuilt
+  rabbitmq-admin:
+    build: *prebuilt
+  kafka-admin:
+    build: *prebuilt
+  api-gateway:
+    build: *prebuilt

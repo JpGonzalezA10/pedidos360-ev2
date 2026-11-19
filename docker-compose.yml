@@ -1,12 +1,30 @@
 # Pedidos360 - entorno Docker.
 #
-# Solo infraestructura (MySQL + RabbitMQ), para ejecutar los servicios desde el IDE:
+# Solo infraestructura (MySQL + cluster RabbitMQ + cluster Kafka + Kafka-UI):
 #   docker compose up -d
 #
-# Stack completo (infraestructura + 6 microservicios), por ejemplo en EC2:
+# Stack completo (infraestructura + 7 microservicios), por ejemplo en EC2:
 #   docker compose --profile app up -d --build
 #
+# EP5: el cluster Kafka (ZooKeeper + 3 brokers + kafka-init) y Kafka-UI viven en sus propios archivos,
+# funcionales por separado, y se incluyen aqui para levantar todo con un solo comando.
+#
 # Las credenciales y API keys se toman de un archivo .env (ver .env.example).
+include:
+  - docker-compose.kafka.yml
+  - docker-compose.kafka-ui.yml
+
+# EP5: memoria acotada por JVM (7 microservicios + Kafka en la misma instancia EC2).
+x-java-opts: &java-opts
+  JAVA_TOOL_OPTIONS: ${SERVICE_JAVA_OPTS:--Xms64m -Xmx256m -XX:MaxMetaspaceSize=160m -XX:+UseSerialGC}
+
+# EP5: dependencias Kafka comunes de los microservicios productores/consumidores.
+x-kafka-env: &kafka-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+  KAFKA_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_LISTENER_CONCURRENCY: 3
+
 services:
   mysql:
     image: mysql:8.0
@@ -77,6 +95,7 @@ services:
       mysql:
         condition: service_healthy
     environment:
+      <<: *java-opts
       DB_URL: jdbc:mysql://mysql:3306/smartlogix_auth?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       DB_USERNAME: root
       DB_PASSWORD: ""
@@ -92,11 +111,14 @@ services:
     container_name: pedidos360-inventario
     restart: unless-stopped
     depends_on:
+      kafka-init:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: [*kafka-env, *java-opts]
       DB_URL: jdbc:mysql://mysql:3306/smartlogix?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       DB_USERNAME: root
       DB_PASSWORD: ""
@@ -117,11 +139,14 @@ services:
     container_name: pedidos360-pedidos
     restart: unless-stopped
     depends_on:
+      kafka-init:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: [*kafka-env, *java-opts]
       DB_URL: jdbc:mysql://mysql:3306/smartlogix_orders?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       DB_USERNAME: root
       DB_PASSWORD: ""
@@ -145,11 +170,14 @@ services:
     container_name: pedidos360-envios
     restart: unless-stopped
     depends_on:
+      kafka-init:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: [*kafka-env, *java-opts]
       DB_URL: jdbc:mysql://mysql:3306/smartlogix_shipping?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       DB_USERNAME: root
       DB_PASSWORD: ""
@@ -176,6 +204,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: *java-opts
       RABBITMQ_HOST: rabbitmq
       # EP4: lista de nodos del cluster; si el nodo 1 cae, el cliente conmuta al nodo 2.
       SPRING_RABBITMQ_ADDRESSES: rabbitmq:5672,rabbitmq-2:5672
@@ -185,6 +214,24 @@ services:
       RABBIT_ADMIN_API_KEY: ${RABBIT_ADMIN_API_KEY:-local-dev-rabbit-admin-key}
     ports:
       - "8085:8085"
+
+  # EP5: microservicio administrador de Kafka (topicos, configuraciones, consumer groups y DLT).
+  kafka-admin:
+    profiles: ["app"]
+    build:
+      context: ./kafka-admin
+      dockerfile: ../docker/spring-service.Dockerfile
+    container_name: pedidos360-kafka-admin
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *java-opts
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      KAFKA_ADMIN_API_KEY: ${KAFKA_ADMIN_API_KEY:-local-dev-kafka-admin-key}
+    ports:
+      - "8086:8086"
 
   api-gateway:
     profiles: ["app"]
@@ -199,7 +246,11 @@ services:
       - pedidos
       - envios
       - rabbitmq-admin
+      - kafka-admin
     environment:
+      <<: *java-opts
+      KAFKA_ADMIN_SERVICE_URL: http://kafka-admin:8086
+      KAFKA_ADMIN_API_KEY: ${KAFKA_ADMIN_API_KEY:-local-dev-kafka-admin-key}
       AUTH_SERVICE_URL: http://auth-service:8082
       INVENTORY_SERVICE_URL: http://inventario:8081
       INVENTARIO_API_KEY: ${INVENTARIO_API_KEY:-local-dev-inventory-key}

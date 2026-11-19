@@ -433,3 +433,74 @@ bash scripts/ep3-demo.sh            # escenarios de demostracion (requiere curl 
 - RabbitMQ Management: `http://<host>:15672` (usuario/clave de `.env`)
 - Administrador de RabbitMQ: ver [`rabbitmq-admin/README.md`](rabbitmq-admin/README.md)
 - Frontend: seccion **Mensajeria** del panel ADMIN (alerta de DLQ con consulta cada 5 s)
+
+
+## EP5 - Streaming de eventos con Apache Kafka
+
+Kafka se incorpora **junto a** RabbitMQ, sin modificar ninguna integracion previa:
+
+| Necesidad | Tecnologia | Por que |
+| --- | --- | --- |
+| Orquestar acciones entre servicios (crear despacho, cancelar envio, sincronizar estados) | RabbitMQ (EP3/EP4) | Cola de trabajo: cada mensaje lo procesa un consumidor y se elimina; ACK manual, retry y DLQ. |
+| Historial de eventos, analitica en tiempo real, multiples lectores y replay | Kafka (EP5) | Log distribuido y retenido: varios consumer groups leen los mismos eventos de forma independiente y pueden releerlos. |
+
+Los servicios de negocio siguen emitiendo solo eventos de dominio de Spring; la nueva capa `streaming/` de cada
+microservicio los publica en Kafka **despues del commit** (`@TransactionalEventListener`), igual que `messaging/` lo
+hace con RabbitMQ. Ambos productores escuchan el mismo evento de dominio.
+
+### Estructura de la capa de streaming (por microservicio)
+
+```text
+streaming/
+  config/     StreamingProperties (topicos, particiones, RF, configs, grupos, DLT, reintentos)
+              KafkaTopicConfig (NewTopic declarados como codigo) y KafkaErrorHandlingConfig (DefaultErrorHandler + DLT)
+  producer/   productores con KafkaTemplate + DTO + headers (correlation-id, tipo de evento, servicio origen)
+  consumer/   @KafkaListener: validan (@Valid), descartan duplicados y delegan en un servicio de dominio
+  message/    DTOs tipados del contrato de cada topico
+  support/    ProcessedEventRegistry (idempotencia), NonRetryableEventException, DeadLetterValueSerializer
+```
+
+### Topicos y consumer groups
+
+| Topico | Key | Particiones / RF | Configuracion | Productor | Consumer groups |
+| --- | --- | --- | --- | --- | --- |
+| `pedidos360.pedidos.eventos` | `orderId` | 3 / 3 | `delete`, retencion 7 dias y 512 MB/particion, `min.insync.replicas=2` | pedidos | `envios-seguimiento` (envios), `inventario-demanda` (inventario) |
+| `pedidos360.inventario.stock` | `sku` | 3 / 3 | `compact` (ultimo valor por SKU), `min.compaction.lag.ms=60000`, `min.insync.replicas=2` | inventario | `pedidos-stock-cache` (pedidos) |
+| `*.DLT` | original | 3 / 3 | `delete`, retencion 14 dias | DefaultErrorHandler | `kafka-admin-dlt-reprocessor` |
+
+- Cada grupo tiene `concurrency=3`: 3 consumidores, uno por particion (balanceo de carga dentro del grupo).
+- `envios-seguimiento` e `inventario-demanda` leen el **mismo** topico de forma independiente (publish/subscribe).
+- La key garantiza orden por pedido/SKU: todos sus eventos van a la misma particion.
+
+### Configuracion del cliente
+
+- Productor: `JacksonJsonSerializer` (DTO -> JSON), `acks=all`, `enable.idempotence=true`, `batch.size=32KB`,
+  `linger.ms=20`, `compression.type=lz4`.
+- Consumidor: `ErrorHandlingDeserializer` + `JacksonJsonDeserializer` al DTO local, `auto-offset-reset=earliest`,
+  commit manual por registro (`ack-mode=record`), `CooperativeStickyAssignor`, `isolation-level=read_committed`.
+
+### Manejo de errores
+
+| Situacion | Tratamiento |
+| --- | --- |
+| JSON corrupto | `ErrorHandlingDeserializer` -> DLT sin reintentos (el JSON original se conserva) |
+| Payload invalido (`@Valid` sobre el DTO) | DLT sin reintentos |
+| Regla de negocio (estado desconocido, SKU inexistente) | `NonRetryableEventException` -> DLT sin reintentos |
+| Error transitorio (BD caida) | 3 reintentos con backoff exponencial 1 s / 2 s / 4 s y luego DLT |
+| Mensaje duplicado (at-least-once) | `ProcessedEventRegistry` lo ignora |
+
+Cada linea de log incluye `[cid:<correlation-id> rec:<topico-particion@offset>]` (MDC).
+
+### Ejecucion
+
+```bash
+docker compose -f docker-compose.kafka.yml up -d                       # solo cluster Kafka (ZooKeeper + 3 brokers + topicos)
+docker compose -f docker-compose.kafka.yml -f docker-compose.kafka-ui.yml up -d   # + Kafka-UI (puerto 8090)
+docker compose --profile app up -d --build                              # stack completo (incluye ambos archivos)
+bash scripts/kafka-ops.sh lag                                           # CLI: topicos, configs, grupos, lag, reset
+bash scripts/ep5-demo.sh                                                # escenarios de demostracion
+```
+
+- Kafka-UI: `http://<host>:8090`
+- Administrador de Kafka: ver [`kafka-admin/README.md`](kafka-admin/README.md)
+- Despliegue en AWS: `scripts/aws-launch-ec2-ep5.sh` (CloudShell) y `scripts/ec2-deploy-ep5.sh` (en la instancia)

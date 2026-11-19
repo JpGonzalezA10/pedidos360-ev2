@@ -1,0 +1,142 @@
+# =====================================================================
+# EP5 - Cluster Apache Kafka de Pedidos360: 1 ZooKeeper + 3 brokers + inicializacion de topicos.
+#
+# Por si solo (solo Kafka):
+#   docker compose -f docker-compose.kafka.yml up -d
+# Junto al resto del stack lo incluye docker-compose.yml (directiva include).
+#
+# - Confluent Platform 7.9 (Apache Kafka 3.9): ultima linea que soporta ZooKeeper como coordinador.
+# - 3 brokers -> topicos con factor de replicacion 3 y min.insync.replicas=2: el cluster tolera la caida
+#   de 1 broker sin perder datos ni dejar de aceptar escrituras con acks=all.
+# - Dos listeners por broker: INTERNAL (red Docker, microservicios y Kafka-UI) y EXTERNAL (host).
+# - auto.create.topics.enable=false: los topicos se crean SOLO de forma controlada (kafka-init,
+#   KafkaAdmin de cada microservicio o el microservicio kafka-admin), nunca por un typo de un productor.
+# =====================================================================
+
+x-kafka-broker-env: &kafka-broker-env
+  KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+  KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  # Topicos: creacion explicita y valores por defecto seguros (RF 3, ISR minimo 2, 3 particiones).
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_DELETE_TOPIC_ENABLE: "true"
+  KAFKA_NUM_PARTITIONS: 3
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+  # Topicos internos (__consumer_offsets y transacciones) tambien replicados en los 3 brokers.
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  # Retencion por defecto del broker (cada topico la sobreescribe): 7 dias, revision cada 1 minuto.
+  KAFKA_LOG_RETENTION_HOURS: 168
+  KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 60000
+  KAFKA_LOG_SEGMENT_BYTES: 104857600
+  # Espera breve antes del primer rebalanceo para que entren todos los consumidores del grupo.
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
+  KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:--Xms256m -Xmx512m}
+
+x-kafka-broker: &kafka-broker
+  image: confluentinc/cp-kafka:7.9.0
+  restart: unless-stopped
+  depends_on:
+    zookeeper:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092 > /dev/null 2>&1"]
+    interval: 15s
+    timeout: 15s
+    retries: 10
+    start_period: 30s
+
+services:
+  # Coordinador del cluster: registro de brokers, eleccion del controlador y metadata de topicos.
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.9.0
+    container_name: pedidos360-zookeeper
+    hostname: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_4LW_COMMANDS_WHITELIST: ruok,stat,srvr,mntr
+      KAFKA_HEAP_OPTS: -Xms128m -Xmx256m
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2181 && echo ruok >&3 && grep -q imok <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka-1:
+    <<: *kafka-broker
+    container_name: pedidos360-kafka-1
+    hostname: kafka-1
+    environment:
+      <<: *kafka-broker-env
+      KAFKA_BROKER_ID: 1
+      KAFKA_BROKER_RACK: rack-a
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:29092,EXTERNAL://${KAFKA_EXTERNAL_HOST:-localhost}:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_1_data:/var/lib/kafka/data
+
+  kafka-2:
+    <<: *kafka-broker
+    container_name: pedidos360-kafka-2
+    hostname: kafka-2
+    environment:
+      <<: *kafka-broker-env
+      KAFKA_BROKER_ID: 2
+      KAFKA_BROKER_RACK: rack-b
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:29092,EXTERNAL://${KAFKA_EXTERNAL_HOST:-localhost}:9093
+    ports:
+      - "9093:9092"
+    volumes:
+      - kafka_2_data:/var/lib/kafka/data
+
+  kafka-3:
+    <<: *kafka-broker
+    container_name: pedidos360-kafka-3
+    hostname: kafka-3
+    environment:
+      <<: *kafka-broker-env
+      KAFKA_BROKER_ID: 3
+      KAFKA_BROKER_RACK: rack-c
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:29092,EXTERNAL://${KAFKA_EXTERNAL_HOST:-localhost}:9094
+    ports:
+      - "9094:9092"
+    volumes:
+      - kafka_3_data:/var/lib/kafka/data
+
+  # Contenedor de un solo uso: crea (si no existen) los topicos de negocio y sus DLT con su
+  # configuracion de administracion, y la alinea si ya existian. Script: docker/kafka/create-topics.sh
+  kafka-init:
+    image: confluentinc/cp-kafka:7.9.0
+    container_name: pedidos360-kafka-init
+    restart: "no"
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+    volumes:
+      - ./docker/kafka/create-topics.sh:/scripts/create-topics.sh:ro
+    entrypoint: ["bash", "/scripts/create-topics.sh"]
+
+volumes:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_1_data:
+  kafka_2_data:
+  kafka_3_data:

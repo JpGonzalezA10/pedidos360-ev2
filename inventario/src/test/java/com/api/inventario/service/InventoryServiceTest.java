@@ -35,6 +35,10 @@ class InventoryServiceTest {
     @Mock
     private ProductService productService;
 
+    // EP5: InventoryService emite StockChangedEvent; en pruebas unitarias se usa un mock.
+    @Mock
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
+
     @InjectMocks
     private InventoryService inventoryService;
 

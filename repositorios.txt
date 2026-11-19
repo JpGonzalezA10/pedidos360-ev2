@@ -28,3 +28,7 @@ Componentes versionados dentro del repositorio principal:
    Contenido: envios, tracking, eventos, integracion con pedidos, Circuit Breaker y Flyway.
 
 
+
+7. Kafka admin service (EP5)
+   Enlace: https://github.com/FelipeNorambuena/Smartlogix/tree/main/kafka-admin
+   Contenido: administracion de topicos, configuraciones, consumer groups y Dead Letter Topics de Apache Kafka.
